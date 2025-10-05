@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, render_template, redirect, url_for, flash
 from flask_sqlalchemy import SQLAlchemy
 from flask_cors import CORS
 
@@ -6,6 +6,7 @@ from flask_cors import CORS
 app = Flask(__name__)
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///car_rental.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+app.secret_key = 'your_secret_key'  # Secret key for flash messages
 
 # Initialize extensions
 db = SQLAlchemy(app)
@@ -34,43 +35,70 @@ class Booking(db.Model):
     end_date = db.Column(db.String(20))
     total_price = db.Column(db.Float)
 
+def add_dummy_cars():
+    if Car.query.count() == 0:  # Only add data if no cars exist
+        cars = [
+            Car(make="Toyota", model="Corolla", price_per_day=40.0, category="Sedan", available=True),
+            Car(make="Ford", model="Mustang", price_per_day=80.0, category="Coupe", available=True),
+            Car(make="BMW", model="X5", price_per_day=120.0, category="SUV", available=True),
+            Car(make="Tesla", model="Model S", price_per_day=150.0, category="Sedan", available=True),
+            Car(make="Chevrolet", model="Camaro", price_per_day=70.0, category="Coupe", available=True)
+        ]
+        db.session.bulk_save_objects(cars)
+        db.session.commit()
+
 # Routes
+@app.route('/')
+def home():
+    # Render the home page
+    return render_template('index.html')
 
 # ---------- AUTH ----------
-@app.route('/register', methods=['POST'])
+@app.route('/register', methods=['GET', 'POST'])
 def register():
-    data = request.json
-    if User.query.filter_by(email=data['email']).first():
-        return jsonify({'error': 'Email already exists'}), 400
-    user = User(email=data['email'], password=data['password'], is_admin=data.get('is_admin', False))
-    db.session.add(user)
-    db.session.commit()
-    return jsonify({'message': 'User registered successfully'})
+    if request.method == 'POST':
+        data = request.form
+        # Check if user exists
+        if User.query.filter_by(email=data['email']).first():
+            flash('Email already exists!', 'error')
+            return redirect(url_for('register'))
 
-@app.route('/login', methods=['POST'])
+        # Create new user
+        user = User(
+            email=data['email'], 
+            password=data['password'], 
+            is_admin='is_admin' in data
+        )
+        db.session.add(user)
+        db.session.commit()
+        flash('User registered successfully!', 'success')
+        return redirect(url_for('login'))
+
+    return render_template('register.html')
+
+@app.route('/login', methods=['GET', 'POST'])
 def login():
-    data = request.json
-    user = User.query.filter_by(email=data['email'], password=data['password']).first()
-    if user:
-        return jsonify({'message': 'Login successful', 'user_id': user.id, 'is_admin': user.is_admin})
-    return jsonify({'error': 'Invalid credentials'}), 401
+    if request.method == 'POST':
+        data = request.form
+        user = User.query.filter_by(email=data['email'], password=data['password']).first()
+
+        if user:
+            flash('Login successful!', 'success')
+            return redirect(url_for('get_cars'))  # Use get_cars here
+        else:
+            flash('Invalid credentials!', 'error')
+
+    return render_template('login.html')
 
 # ---------- CARS ----------
 @app.route('/cars', methods=['GET'])
 def get_cars():
     cars = Car.query.all()
-    return jsonify([{
-        'id': car.id,
-        'make': car.make,
-        'model': car.model,
-        'price_per_day': car.price_per_day,
-        'category': car.category,
-        'available': car.available
-    } for car in cars])
+    return render_template('cars.html', cars=cars)
 
 @app.route('/cars', methods=['POST'])
 def add_car():
-    data = request.json
+    data = request.form
     car = Car(
         make=data['make'],
         model=data['model'],
@@ -80,51 +108,58 @@ def add_car():
     )
     db.session.add(car)
     db.session.commit()
-    return jsonify({'message': 'Car added successfully'})
+    flash('Car added successfully!', 'success')
+    return redirect(url_for('get_cars'))  # Corrected this
 
 @app.route('/cars/<int:id>', methods=['DELETE'])
 def delete_car(id):
     car = Car.query.get(id)
     if not car:
-        return jsonify({'error': 'Car not found'}), 404
+        flash('Car not found!', 'error')
+        return redirect(url_for('get_cars'))  # Corrected this
     db.session.delete(car)
     db.session.commit()
-    return jsonify({'message': 'Car deleted'})
+    flash('Car deleted successfully!', 'success')
+    return redirect(url_for('get_cars'))  # Corrected this
 
 # ---------- BOOKINGS ----------
-@app.route('/bookings', methods=['POST'])
+@app.route('/bookings', methods=['GET', 'POST'])
 def create_booking():
-    data = request.json
-    booking = Booking(
-        user_id=data['user_id'],
-        car_id=data['car_id'],
-        start_date=data['start_date'],
-        end_date=data['end_date'],
-        total_price=data['total_price']
-    )
-    db.session.add(booking)
-    db.session.commit()
+    if request.method == 'POST':
+        data = request.form
+        car = Car.query.get(data['car_id'])
+        user = User.query.get(data['user_id'])
 
-    print(f"Booking confirmed for user {data['user_id']} – confirmation email sent (mock)")
-    return jsonify({'message': 'Booking created successfully'})
+        # Calculate total price
+        start_date = data['start_date']
+        end_date = data['end_date']
+        total_price = (end_date - start_date) * car.price_per_day  # Simple price calculation
+
+        booking = Booking(
+            user_id=user.id,
+            car_id=car.id,
+            start_date=start_date,
+            end_date=end_date,
+            total_price=total_price
+        )
+
+        db.session.add(booking)
+        db.session.commit()
+        flash('Booking created successfully!', 'success')
+        return redirect(url_for('view_bookings'))  # Corrected this
+
+    cars = Car.query.all()  # Get available cars
+    return render_template('booking.html', cars=cars)
 
 @app.route('/admin/bookings', methods=['GET'])
 def view_bookings():
     bookings = Booking.query.all()
-    return jsonify([{
-        'id': b.id,
-        'user_id': b.user_id,
-        'car_id': b.car_id,
-        'start_date': b.start_date,
-        'end_date': b.end_date,
-        'total_price': b.total_price
-    } for b in bookings])
-
-# ---------- INIT DB ----------
-@app.before_first_request
-def create_tables():
-    db.create_all()
+    return render_template('view_bookings.html', bookings=bookings)
 
 # Run app
 if __name__ == '__main__':
+    with app.app_context():
+        db.create_all()  # Ensure the database tables are created
+        add_dummy_cars()  # Add dummy cars if the table is empty
     app.run(debug=True)
+
